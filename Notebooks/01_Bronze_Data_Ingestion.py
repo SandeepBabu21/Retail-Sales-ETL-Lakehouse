@@ -76,7 +76,10 @@ display(spark.sql("SHOW TABLES IN workspace.bronze"))
 storage_account = "retailsalesdlsb"
 container = "retail-data"
 
-sas_token = "REDACTED_REVOKED_SAS"
+sas_token = dbutils.secrets.get(
+    scope="retail-sales",
+    key="azure-sas-token"
+).replace("\x00", "").strip().lstrip("?")
 
 customers_url = (
     f"https://{storage_account}.blob.core.windows.net/"
