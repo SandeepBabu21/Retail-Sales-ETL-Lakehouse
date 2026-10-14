@@ -1,44 +1,61 @@
 # Databricks notebook source
-customers_df = (
-    spark.read
-    .option("header", "true")
-    .option("inferSchema", "true")
-    .csv("/Volumes/workspace/default/retail_sales_raw/customers.csv")
+# Cell 1 - Secure Azure Blob Storage Connection
+
+from azure.storage.blob import BlobServiceClient
+
+storage_account = "retailsalesdlsb"
+container_name = "retail-data"
+
+# Retrieve SAS token from Databricks Secrets
+sas_token = dbutils.secrets.get(
+    scope="retail-sales",
+    key="azure-sas-token"
 )
 
-display(customers_df)
+# Remove invisible null characters
+sas_token = sas_token.replace("\x00", "").strip().lstrip("?")
 
-# COMMAND ----------
-
-customers_df.printSchema()
-
-# COMMAND ----------
-
-customers_df.count()
-
-# COMMAND ----------
-
-products_df = (
-    spark.read
-    .option("header", "true")
-    .option("inferSchema", "true")
-    .csv("/Volumes/workspace/default/retail_sales_raw/products.csv")
+# Create secure Azure connection
+blob_service_client = BlobServiceClient(
+    account_url=f"https://{storage_account}.blob.core.windows.net",
+    credential=sas_token
 )
 
-display(products_df)
-
-# COMMAND ----------
-
-sales_df = (
-    spark.read
-    .option("header", "true")
-    .option("inferSchema", "true")
-    .csv("/Volumes/workspace/default/retail_sales_raw/sales.csv")
+container_client = blob_service_client.get_container_client(
+    container_name
 )
 
-display(sales_df)
+# Verify connection
+next(container_client.list_blobs(results_per_page=1), None)
+
+print("Azure Blob Storage connected successfully!")
 
 # COMMAND ----------
+
+from io import BytesIO
+from pyspark.sql.types import StringType
+
+def load_csv_from_azure(filename):
+    blob_client = container_client.get_blob_client(
+        f"raw/{filename}"
+    )
+
+    csv_data = blob_client.download_blob().readall()
+
+    pandas_df = pd.read_csv(
+        BytesIO(csv_data),
+        dtype=str
+    )
+
+    return spark.createDataFrame(pandas_df)
+
+
+import pandas as pd
+
+# Load datasets directly from Azure Blob Storage
+customers_df = load_csv_from_azure("customers.csv")
+products_df = load_csv_from_azure("products.csv")
+sales_df = load_csv_from_azure("sales.csv")
 
 print("Customers:", customers_df.count())
 print("Products:", products_df.count())
@@ -62,90 +79,82 @@ products_df.write \
     .mode("overwrite") \
     .saveAsTable("workspace.bronze.products")
 
-sales_df.write \
-    .format("delta") \
-    .mode("overwrite") \
-    .saveAsTable("workspace.bronze.sales")
+
+
+# COMMAND ----------
+
+# Cell 6 - Safe Bronze Sales Ingestion
+
+from delta.tables import DeltaTable
+from pyspark.sql import functions as F
+
+sales_table = "workspace.bronze.sales"
+
+# Step 1: Prepare sales data from Azure Blob Storage
+sales_source = (
+    sales_df
+    .withColumn("quantity", F.col("quantity").cast("double"))
+    .withColumn(
+        "sale_date",
+        F.coalesce(
+            F.expr("try_to_date(sale_date, 'yyyy-MM-dd')"),
+            F.expr("try_to_date(sale_date, 'M/d/yyyy')"),
+            F.expr("try_to_date(sale_date, 'MM/dd/yyyy')")
+        )
+    )
+)
+
+# Step 2: Remove records with missing or invalid required values
+sales_source = sales_source.filter(
+    F.col("transaction_id").isNotNull() &
+    (F.trim(F.col("transaction_id")) != "") &
+    F.col("customer_id").isNotNull() &
+    F.col("product_id").isNotNull() &
+    F.col("quantity").isNotNull() &
+    F.col("sale_date").isNotNull()
+)
+
+# Step 3: Remove duplicate transaction IDs from source
+sales_source = sales_source.dropDuplicates(["transaction_id"])
+
+# Step 4: Check whether Bronze sales table already exists
+if spark.catalog.tableExists(sales_table):
+
+    # Insert only transactions that do not already exist
+    (
+        DeltaTable.forName(spark, sales_table)
+        .alias("target")
+        .merge(
+            sales_source.alias("source"),
+            "target.transaction_id = source.transaction_id"
+        )
+        .whenNotMatchedInsertAll()
+        .execute()
+    )
+
+    print("SUCCESS: New sales transactions merged into Bronze!")
+
+else:
+
+    # Create Bronze sales table for the first time
+    (
+        sales_source.write
+        .format("delta")
+        .mode("errorifexists")
+        .saveAsTable(sales_table)
+    )
+
+    print("SUCCESS: Bronze sales table created!")
+
+# Step 5: Display total Bronze sales records
+print(
+    "Total Bronze Sales:",
+    spark.table(sales_table).count()
+)
 
 # COMMAND ----------
 
 display(spark.sql("SHOW TABLES IN workspace.bronze"))
-
-# COMMAND ----------
-
-storage_account = "retailsalesdlsb"
-container = "retail-data"
-
-sas_token = dbutils.secrets.get(
-    scope="retail-sales",
-    key="azure-sas-token"
-).replace("\x00", "").strip().lstrip("?")
-
-customers_url = (
-    f"https://{storage_account}.blob.core.windows.net/"
-    f"{container}/raw/customers.csv?{sas_token}"
-)
-
-print("Azure customers.csv URL created successfully")
-
-# COMMAND ----------
-
-import requests
-import pandas as pd
-from io import StringIO
-
-response = requests.get(customers_url)
-
-print("HTTP Status:", response.status_code)
-
-if response.status_code == 200:
-    customers_pd = pd.read_csv(StringIO(response.text))
-    customers_df = spark.createDataFrame(customers_pd)
-
-    print("Successfully loaded customers.csv from Azure!")
-    print("Rows:", customers_df.count())
-
-    display(customers_df)
-else:
-    print("Failed to access Azure file")
-    print(response.text[:500])
-
-# COMMAND ----------
-
-import requests
-import pandas as pd
-from io import StringIO
-
-def load_csv_from_azure(filename):
-    url = (
-        f"https://{storage_account}.blob.core.windows.net/"
-        f"{container}/raw/{filename}?{sas_token}"
-    )
-
-    response = requests.get(url)
-    response.raise_for_status()
-
-    pandas_df = pd.read_csv(StringIO(response.text))
-
-    return spark.createDataFrame(pandas_df)
-
-
-# Load all three datasets
-customers_df = load_csv_from_azure("customers.csv")
-products_df = load_csv_from_azure("products.csv")
-sales_df = load_csv_from_azure("sales.csv")
-
-print("Customers:", customers_df.count())
-print("Products:", products_df.count())
-print("Sales:", sales_df.count())
-
-# COMMAND ----------
-
-print("Azure sales dataframe:")
-sales_df.printSchema()
-
-print("Existing Bronze sales table:")
-spark.table("workspace.bronze.sales").printSchema()
 
 # COMMAND ----------
 
@@ -160,28 +169,6 @@ sales_df.printSchema()
 
 # COMMAND ----------
 
-sales_df.write \
-    .format("delta") \
-    .mode("overwrite") \
-    .saveAsTable("workspace.bronze.sales")
-
-print("Bronze sales table updated successfully!")
-
-# COMMAND ----------
-
 print("Bronze Customers:", spark.table("workspace.bronze.customers").count())
 print("Bronze Products:", spark.table("workspace.bronze.products").count())
 print("Bronze Sales:", spark.table("workspace.bronze.sales").count())
-
-# COMMAND ----------
-
-display(dbutils.fs.ls("/Volumes/workspace/default/retail_sales_raw/"))
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC
-# MAGIC SELECT *
-# MAGIC FROM workspace.bronze.sales
-# MAGIC WHERE transaction_id BETWEEN 'T523' AND 'T532'
-# MAGIC ORDER BY transaction_id;
