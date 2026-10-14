@@ -1,323 +1,270 @@
 # Retail Sales ETL Lakehouse Pipeline using Databricks
 
+**End-to-end retail data engineering project | Azure Blob Storage · Databricks · PySpark · Delta Lake · SQL**
+
 ## Project Overview
 
-This project implements an end-to-end Retail Sales ETL pipeline using
-Databricks and the Medallion Architecture. It ingests retail sales data,
-processes it through Bronze, Silver, and Gold layers, supports
-incremental loading, and updates business analytics when new files
-arrive. A file-arrival trigger automates the workflow.
+This project implements a retail sales ETL lakehouse pipeline using **Databricks** and the **Medallion Architecture (Bronze, Silver, Gold)**. It loads customer, product, and sales data from Azure Blob Storage, cleans and validates datasets with PySpark, processes new sales transactions incrementally using Delta Lake `MERGE`, and builds analytics-ready tables for business reporting.
 
-## Project Objective
+A **Databricks file-arrival trigger** orchestrates incremental sales ingestion, Silver cleaning, and Gold aggregation when new files arrive in the incoming Databricks Volume.
 
--   Ingest raw retail sales data
--   Store raw data in the Bronze layer
--   Clean and standardize data in the Silver layer
--   Create business-level aggregations in the Gold layer
--   Support incremental data ingestion
--   Prevent duplicate transactions
--   Automatically trigger processing when new files arrive
--   Generate analytics for revenue, products, customers, and categories
+## Project Results
+
+| Metric | Verified result |
+|---|---:|
+| Cleaned customers | **100** |
+| Cleaned products | **30** |
+| Processed sales transactions | **527** |
+| Sales referencing missing customers | **0** |
+| Sales referencing missing products | **0** |
+| Analytics-ready Gold tables | **4** |
+| Databricks notebooks | **5** |
+
+**Validation:** The Silver notebook completed a successful full run, and the automated Databricks workflow completed successfully. An incremental validation batch containing transaction IDs `T523`–`T532` was used to test downstream processing. These counts describe the verified project state, not ongoing live metrics.
 
 ## Architecture
 
-``` text
-Azure Blob Storage / Incoming CSV Files
+```text
+Initial load:
+Azure Blob Storage (raw/customers.csv, products.csv, sales.csv)
                 |
                 v
-        Databricks Volume
+     Bronze Ingestion Notebook
                 |
                 v
-      Bronze Data Ingestion
+     Bronze Delta Tables
+                |
+                +-----------------------------+
+                                              |
+Incremental load:                             |
+Incoming CSVs in Databricks Volume            |
+                |                             |
+                v                             |
+      File-Arrival Trigger                    |
+                |                             |
+                v                             |
+   Incremental Sales Ingestion                |
+                |                             |
+                v                             |
+   Delta MERGE into Bronze Sales -------------+
                 |
                 v
-        Bronze Delta Tables
-                |
-                v
-       Silver Data Cleaning
+        Silver Cleaning
                 |
                 v
         Silver Delta Tables
                 |
                 v
-     Gold Business Analytics
+      Gold Business Analytics
                 |
                 v
-         Gold Delta Tables
+        Gold Delta Tables
                 |
                 v
-        Sales Analytics
-                |
-                v
-     Business Visualizations
+       Sales Analytics (SQL)
 ```
+
+The initial Bronze load reads raw files from **Azure Blob Storage**. Incremental sales files are read from the **Databricks Volume** at `/Volumes/workspace/default/retail_sales_incoming/`.
+
+## Technology Stack
+
+| Area | Technologies |
+|---|---|
+| Cloud storage | Azure Blob Storage |
+| Processing platform | Databricks, Apache Spark, PySpark |
+| Lakehouse storage | Delta Lake |
+| Data organization and governance | Unity Catalog |
+| Querying and reporting | Spark SQL, SQL |
+| Orchestration | Databricks Workflows, File Arrival Trigger |
+| Source format | CSV |
+| Programming | Python |
 
 ## Medallion Architecture
 
-### Bronze Layer
+### Bronze — ingestion
 
-Stores raw and incrementally ingested data.
+Stores source customers, products, and sales in Delta tables. The initial ingestion notebook reads CSVs from Azure Blob Storage; sales are loaded using an insert-only Delta `MERGE` when the Bronze sales table already exists.
 
-Tables: - `workspace.bronze.customers` - `workspace.bronze.products` -
-`workspace.bronze.sales`
+| Table | Purpose |
+|---|---|
+| `workspace.bronze.customers` | Customer source records |
+| `workspace.bronze.products` | Product source records |
+| `workspace.bronze.sales` | Sales transactions, including incremental inserts |
 
-### Silver Layer
+### Silver — cleaning and validation
 
-Contains cleaned and standardized data.
+Standardizes customer, product, and sales data; removes duplicate business keys; casts numeric and date fields; and checks for invalid values and unmatched customer/product references.
 
-Tables: - `workspace.silver.customers` - `workspace.silver.products` -
-`workspace.silver.sales`
+| Table | Purpose |
+|---|---|
+| `workspace.silver.customers` | Deduplicated customer records |
+| `workspace.silver.products` | Deduplicated product records with numeric prices |
+| `workspace.silver.sales` | Deduplicated sales with standardized quantity and date |
 
-Transformations include data type conversion, date standardization, null
-filtering, duplicate handling, data validation, and schema consistency.
+**Data-quality decision:** A product with a missing price is retained rather than discarded, because sales transactions reference that product. Its revenue remains `NULL` until a valid price is available. This preserves transaction coverage without inventing revenue.
 
-### Gold Layer
+### Gold — business aggregations
 
-Contains business-ready aggregated datasets.
+Joins Silver sales with products and customers using **left joins** to preserve sales transactions, calculates known revenue as `quantity × price`, and writes four reporting tables:
 
-Tables: - `workspace.gold.monthly_revenue` -
-`workspace.gold.product_revenue` - `workspace.gold.category_revenue` -
-`workspace.gold.customer_spending`
+| Table | Business use |
+|---|---|
+| `workspace.gold.monthly_revenue` | Revenue trends by month |
+| `workspace.gold.product_revenue` | Revenue by product |
+| `workspace.gold.category_revenue` | Revenue by category |
+| `workspace.gold.customer_spending` | Customer spending rankings |
 
-## Databricks Notebooks
+Revenue calculations exclude unknown-price amounts from summed revenue rather than treating them as confirmed zero revenue.
 
-### 01_Bronze_Data_Ingestion
+## Notebooks
 
-Reads the initial raw datasets, loads customers/products/sales data, and
-creates Bronze Delta tables.
+| Notebook | Role |
+|---|---|
+| [01_Bronze_Data_Ingestion.py](Notebooks/01_Bronze_Data_Ingestion.py) | Secure Azure connection and initial Bronze ingestion |
+| [01B_Incremental_Sales_Ingestion.py](Notebooks/01B_Incremental_Sales_Ingestion.py) | Incoming CSV validation and insert-only Delta MERGE |
+| [02_Silver_Data_Cleaning.py](Notebooks/02_Silver_Data_Cleaning.py) | Deduplication, standardization, quality checks, Silver tables |
+| [03_Gold_Business_Analytics.py](Notebooks/03_Gold_Business_Analytics.py) | Joins, revenue calculation, and Gold aggregates |
+| [04_Sales_Analytics.py](Notebooks/04_Sales_Analytics.py) | SQL queries for business analysis |
 
-### 01B_Incremental_Sales_Ingestion
+## Incremental Sales Ingestion
 
-Reads incoming sales CSV files, standardizes them, identifies new
-transactions, prevents duplicates, and incrementally merges records into
-Bronze.
+The incremental notebook:
 
-``` text
-Read Incoming CSV
-      |
-      v
-Standardize Data
-      |
-      v
-Identify New Transactions
-      |
-      v
-MERGE into Bronze
-      |
-      v
-Validate Bronze Table
-```
+1. Reads incoming CSV files from `/Volumes/workspace/default/retail_sales_incoming/`.
+2. Converts `quantity` to a numeric type and standardizes sales dates.
+3. Filters records missing required values or containing nonpositive quantities.
+4. Deduplicates the incoming batch by `transaction_id`.
+5. Uses **Delta Lake `MERGE`** to insert only transactions not already present in Bronze.
+6. Validates total transaction counts and the latest sales date.
 
-### 02_Silver_Data_Cleaning
+Simplified MERGE logic:
 
-Reads Bronze data, cleans and standardizes records, handles data-quality
-issues, and writes cleaned customers, products, and sales tables to
-Silver.
-
-### 03_Gold_Business_Analytics
-
-Reads Silver tables, performs joins and aggregations, and creates
-business-ready Gold tables.
-
-### 04_Sales_Analytics
-
-Reads Gold tables and provides the final business queries and
-visualizations.
-
-## Incremental Loading
-
-Incremental loading uses Delta Lake `MERGE`, with `transaction_id` as
-the unique transaction key.
-
-``` sql
+```sql
 MERGE INTO workspace.bronze.sales AS target
 USING new_sales_clean AS source
 ON target.transaction_id = source.transaction_id
 WHEN NOT MATCHED THEN
-    INSERT *
+  INSERT (
+    transaction_id, customer_id, product_id, quantity, sale_date
+  )
+  VALUES (
+    source.transaction_id, source.customer_id,
+    source.product_id, source.quantity, source.sale_date
+  );
 ```
 
-This makes repeated processing idempotent for already-existing
-transaction IDs.
+Matching transaction IDs are not inserted again, making repeated processing **idempotent with respect to those IDs**. Existing records are not updated by this MERGE.
 
-Reusable validation:
+### Mixed date formats
 
-``` sql
-SELECT
-    COUNT(*) AS total_bronze_sales,
-    MAX(sale_date) AS latest_sale_date
-FROM workspace.bronze.sales;
-```
+Incoming files may use `yyyy-MM-dd`, `M/d/yyyy`, or `MM/dd/yyyy` formats. The notebook tries each format and uses the first successful parse:
 
-## Mixed Date Format Handling
+```python
+from pyspark.sql import functions as F
 
-Incoming files contained multiple date formats such as `9/29/2026` and
-`2026-09-30`. The pipeline standardizes them before loading.
-
-``` python
-new_sales_clean = (
-    new_sales_raw
-    .withColumn(
-        "sale_date",
-        F.coalesce(
-            F.expr("try_to_date(sale_date, 'yyyy-MM-dd')"),
-            F.expr("try_to_date(sale_date, 'M/d/yyyy')"),
-            F.expr("try_to_date(sale_date, 'MM/dd/yyyy')")
-        )
+new_sales_clean = new_sales_raw.withColumn(
+    "sale_date",
+    F.coalesce(
+        F.expr("try_to_date(sale_date, 'yyyy-MM-dd')"),
+        F.expr("try_to_date(sale_date, 'M/d/yyyy')"),
+        F.expr("try_to_date(sale_date, 'MM/dd/yyyy')")
     )
 )
 ```
 
-## File Arrival Trigger
+## Workflow Automation
 
-The pipeline monitors:
+A **Databricks file-arrival trigger** watches the incoming Volume and launches the following workflow when new files arrive:
 
-``` text
-/Volumes/workspace/default/retail_sales_incoming/
+```text
+01B_Incremental_Sales_Ingestion
+              |
+              v
+       silver_cleaning
+              |
+              v
+       gold_analytics
 ```
 
-When a new CSV file arrives, Databricks starts the ETL workflow.
-
-``` text
-New CSV File
-      |
-      v
-File Arrival Trigger
-      |
-      v
-Incremental Sales Ingestion
-      |
-      v
-Silver Cleaning
-      |
-      v
-Gold Analytics
-```
+The Bronze initialization notebook is separate from the file-arrival workflow; the incremental job appends new sales to the existing Bronze sales table through MERGE.
 
 ## Business Analytics
 
-### Monthly Revenue
+The final SQL notebook queries the Gold tables to produce:
 
-Uses `workspace.gold.monthly_revenue` to track revenue by month.
+- **Monthly revenue trends** — `workspace.gold.monthly_revenue`
+- **Top 10 products by revenue** — `workspace.gold.product_revenue`
+- **Revenue by category** — `workspace.gold.category_revenue`
+- **Top 10 customers by spending** — `workspace.gold.customer_spending`
 
-### Product Revenue
+These outputs can be viewed as tables and visualizations in Databricks.
 
-Uses `workspace.gold.product_revenue` to identify the highest
-revenue-generating products.
+## Data Validation
 
-### Category Revenue
+Checks performed across the pipeline include:
 
-Uses `workspace.gold.category_revenue` to analyze revenue across
-categories such as Electronics, Furniture, Clothing, Home, Accessories,
-and Stationery.
+- Duplicate customer, product, and transaction identifiers
+- Required fields and invalid values
+- Quantity and date type conversion
+- Sales with missing customer or product references
+- Known versus unknown revenue caused by missing prices
+- Row counts before and after joins
+- Successful writes to Silver and Gold Delta tables
+- End-to-end processing after incremental file arrival
 
-### Customer Spending
+Example validation query:
 
-Uses `workspace.gold.customer_spending` to identify the highest-spending
-customers.
-
-## Final Analytics Notebook
-
-`04_Sales_Analytics` contains: - Monthly Revenue Trend - Top 10 Products
-by Revenue - Revenue by Category - Top 10 Customers by Spending
-
-## Validation
-
-The complete workflow was tested using incremental sales files.
-Validation confirmed that: - The file-arrival trigger executed -
-Incremental ingestion completed successfully - New transactions reached
-Bronze - Silver tables refreshed - Gold aggregations updated - Final
-analytics reflected the new data
-
-A validation batch containing transactions `T523` through `T532`
-successfully propagated through Bronze, Silver, Gold, and the analytics
-layer.
-
-## Technologies Used
-
--   Databricks
--   Apache Spark
--   PySpark
--   Spark SQL
--   Delta Lake
--   Unity Catalog
--   Databricks Workflows
--   File Arrival Triggers
--   Azure Blob Storage
--   CSV
--   SQL
--   Python
-
-## Key Features
-
--   End-to-end ETL pipeline
--   Medallion Architecture
--   Bronze, Silver, and Gold layers
--   Incremental ingestion
--   Delta Lake `MERGE`
--   Duplicate prevention
--   File-arrival automation
--   Data validation
--   Mixed date-format handling
--   Business aggregations
--   Data visualizations
--   Automated downstream processing
-
-## Challenges Solved
-
-### Schema Mismatch
-
-The Bronze sales table used a `DATE` column while incoming CSV dates
-could arrive as strings. Incoming dates were standardized before
-merging.
-
-### Multiple Date Formats
-
-Different incoming date formats were handled using `try_to_date()` with
-multiple parsing patterns.
-
-### Duplicate Records
-
-Repeated files could introduce duplicate transactions. Delta Lake
-`MERGE` using `transaction_id` prevents already-existing transaction IDs
-from being inserted again.
-
-### Temporary View Issues
-
-Python DataFrames needed to be exposed to SQL cells using:
-
-``` python
-createOrReplaceTempView()
+```sql
+SELECT
+    COUNT(*) AS total_bronze_sales,
+    COUNT(DISTINCT transaction_id) AS unique_transactions,
+    MAX(sale_date) AS latest_sale_date
+FROM workspace.bronze.sales;
 ```
 
-### Automated Execution
+## Challenges and Solutions
 
-Manual pipeline execution was improved by configuring a Databricks File
-Arrival Trigger.
+| Challenge | Approach |
+|---|---|
+| Repeated incoming sales files | Deduplicate incoming IDs and use insert-only Delta `MERGE` |
+| Mixed incoming date formats | Apply `try_to_date()` with multiple date patterns |
+| Source and target schema differences | Cast quantity and date fields before MERGE |
+| Missing product price | Retain product and sale; report unknown revenue as `NULL` |
+| DataFrames referenced from SQL cells | Register temporary views with `createOrReplaceTempView()` |
+| Manual downstream execution | Automate incremental ingestion, Silver, and Gold using Databricks Workflows |
+| Protecting Azure access credentials | Retrieve the SAS token through Databricks Secrets instead of storing it in source code |
 
-## Project Outcome
+## Security Notes
 
-The final solution demonstrates a cloud-based data engineering workflow
-supporting initial ingestion, incremental ingestion, automated
-orchestration, cleaning and standardization, Delta Lake storage,
-business aggregation, and analytics/reporting.
+The Bronze notebook retrieves the Azure SAS token using `dbutils.secrets.get()`. **Do not commit SAS tokens, storage account keys, or other secrets** to this repository. Access to Azure resources and Databricks objects requires your own configured permissions and credentials.
 
-The pipeline is reusable for future incoming retail sales data.
+## Screenshots
+
+Screenshots of the successful workflow run, Bronze/Silver/Gold tables, and sales analytics can be added to a future `screenshots/` directory. They are intentionally not embedded here until those image files have been uploaded to the repository.
+
+## Running the Project
+
+This repository contains Databricks notebook source files. To reproduce the workflow, you will need a Databricks workspace with the required permissions, access to an Azure Blob Storage container holding the source CSVs, a Databricks Secret scope for the SAS token, and an incoming Databricks Volume.
+
+1. Configure the Azure connection and Databricks secret referenced by the Bronze notebook.
+2. Import the notebooks into Databricks and confirm the `workspace` catalog and required schemas/Volume are available.
+3. Run `01_Bronze_Data_Ingestion` to initialize the Bronze tables.
+4. Run `02_Silver_Data_Cleaning`, then `03_Gold_Business_Analytics`.
+5. Run `04_Sales_Analytics` to view reporting queries.
+6. Configure a Databricks job with the incremental → Silver → Gold task dependency chain and a file-arrival trigger on the incoming Volume.
+
+**Note:** Sample CSV data, cloud resources, secrets, and job configuration are not packaged in this repository; the notebooks require those dependencies to be set up separately.
 
 ## Future Enhancements
 
--   Auto Loader for larger-scale incremental or streaming ingestion
--   Formal data-quality rules
--   Quarantine tables for invalid records
--   Slowly Changing Dimensions
--   Databricks SQL dashboards
--   Monitoring and alerting
--   Schema evolution
--   CI/CD integration
--   Additional KPI reporting
+- Auto Loader for more scalable file ingestion
+- Quarantine tables and formal data-quality expectations
+- Schema evolution and monitoring/alerting
+- Slowly Changing Dimensions (SCD)
+- Databricks SQL dashboards and additional KPIs
+- CI/CD and automated tests
 
 ## Author
 
-**Sandeep Babu**
-
-Data Engineering Project
+**Sandeep Babu**  
+Data Engineering Portfolio Project
