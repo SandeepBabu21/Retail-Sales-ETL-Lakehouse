@@ -19,14 +19,12 @@ display(new_sales_raw)
 
 # COMMAND ----------
 
-# STEP 2: Clean and Convert Incoming Sales Data
-# ==============================================
-
 from pyspark.sql import functions as F
 
+# Step 1: Convert incoming sales data types
 new_sales_clean = (
     new_sales_raw
-    .withColumn("quantity", F.col("quantity").cast("int"))
+    .withColumn("quantity", F.col("quantity").cast("double"))
     .withColumn(
         "sale_date",
         F.coalesce(
@@ -37,19 +35,30 @@ new_sales_clean = (
     )
 )
 
-# Remove records where important fields could not be parsed
+# Step 2: Remove invalid records
 new_sales_clean = new_sales_clean.filter(
     F.col("transaction_id").isNotNull() &
+    (F.trim(F.col("transaction_id")) != "") &
     F.col("customer_id").isNotNull() &
+    (F.trim(F.col("customer_id")) != "") &
     F.col("product_id").isNotNull() &
+    (F.trim(F.col("product_id")) != "") &
     F.col("quantity").isNotNull() &
+    (F.col("quantity") > 0) &
     F.col("sale_date").isNotNull()
 )
 
-# Make the cleaned DataFrame available to SQL cells
+# Step 3: Remove duplicate transaction IDs
+new_sales_clean = new_sales_clean.dropDuplicates(
+    ["transaction_id"]
+)
+
+# Step 4: Create temporary view for SQL MERGE
 new_sales_clean.createOrReplaceTempView("new_sales_clean")
 
+# Step 5: Display results
 print("Clean incoming records:", new_sales_clean.count())
+
 display(new_sales_clean)
 
 # COMMAND ----------
@@ -73,24 +82,32 @@ display(new_sales_clean)
 # COMMAND ----------
 
 # MAGIC %sql
-# MAGIC
-# MAGIC -- STEP 4: Incremental Load into Bronze
-# MAGIC -- =====================================
-# MAGIC
 # MAGIC MERGE INTO workspace.bronze.sales AS target
 # MAGIC USING new_sales_clean AS source
 # MAGIC ON target.transaction_id = source.transaction_id
 # MAGIC
 # MAGIC WHEN NOT MATCHED THEN
-# MAGIC     INSERT *
+# MAGIC INSERT (
+# MAGIC     transaction_id,
+# MAGIC     customer_id,
+# MAGIC     product_id,
+# MAGIC     quantity,
+# MAGIC     sale_date
+# MAGIC )
+# MAGIC VALUES (
+# MAGIC     source.transaction_id,
+# MAGIC     source.customer_id,
+# MAGIC     source.product_id,
+# MAGIC     source.quantity,
+# MAGIC     source.sale_date
+# MAGIC );
 
 # COMMAND ----------
 
 # MAGIC %sql
 # MAGIC
-# MAGIC -- STEP 5: Verify Bronze Sales Table
-# MAGIC
 # MAGIC SELECT
 # MAGIC     COUNT(*) AS total_bronze_sales,
+# MAGIC     COUNT(DISTINCT transaction_id) AS unique_transactions,
 # MAGIC     MAX(sale_date) AS latest_sale_date
 # MAGIC FROM workspace.bronze.sales;
