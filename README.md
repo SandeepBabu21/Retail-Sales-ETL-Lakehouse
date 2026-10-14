@@ -240,7 +240,11 @@ The Bronze notebook retrieves the Azure SAS token using `dbutils.secrets.get()`.
 
 ## Screenshots
 
-Screenshots of the successful workflow run, Bronze/Silver/Gold tables, and sales analytics can be added to a future `screenshots/` directory. They are intentionally not embedded here until those image files have been uploaded to the repository.
+### Successful Databricks ETL Workflow
+
+The screenshot below shows the successful execution of all three automated pipeline tasks: Incremental Sales Ingestion, Silver Data Cleaning, and Gold Business Analytics.
+
+![Successful Databricks ETL Workflow](screenshots/databricks-workflow-success.png)
 
 ## Running the Project
 
