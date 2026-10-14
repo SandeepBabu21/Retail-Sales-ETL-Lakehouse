@@ -258,6 +258,12 @@ The chart below shows the top 10 products by sales revenue, with Laptop generati
 
 ![Top 10 Products by Revenue](screenshots/top-products.png)
 
+### Top 10 Customers by Total Spending
+
+The chart below shows the top 10 customers by total spending, with John Wilson generating the highest sales revenue.
+
+![Top 10 Customers by Total Spending](screenshots/top-customers.png)
+
 ## Running the Project
 
 This repository contains Databricks notebook source files. To reproduce the workflow, you will need a Databricks workspace with the required permissions, access to an Azure Blob Storage container holding the source CSVs, a Databricks Secret scope for the SAS token, and an incoming Databricks Volume.
