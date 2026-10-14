@@ -11,10 +11,71 @@ print("Sales:", sales.count())
 
 # COMMAND ----------
 
+# Check whether every sale matches a product
+sales_products_check = sales.join(
+    products,
+    on="product_id",
+    how="left"
+)
+
+print("Total Silver Sales:", sales.count())
+print("Sales after Product Join:", sales_products_check.count())
+
+print(
+    "Sales with Missing Prices:",
+    sales_products_check.filter("price IS NULL").count()
+)
+
+# COMMAND ----------
+
+from pyspark.sql import functions as F
+
+sales_revenue_check = sales_products_check.withColumn(
+    "revenue",
+    F.col("quantity") * F.col("price")
+)
+
+print("Total Sales:", sales_revenue_check.count())
+
+print(
+    "Sales with Calculated Revenue:",
+    sales_revenue_check.filter(F.col("revenue").isNotNull()).count()
+)
+
+print(
+    "Sales with Unknown Revenue:",
+    sales_revenue_check.filter(F.col("revenue").isNull()).count()
+)
+
+print(
+    "Known Revenue:",
+    sales_revenue_check.agg(
+        F.round(F.sum("revenue"), 2).alias("total")
+    ).first()["total"]
+)
+
+# COMMAND ----------
+
+from pyspark.sql import functions as F
+
+# Join Sales with Products, keeping all transactions
 sales_products = sales.join(
     products,
     on="product_id",
-    how="inner"
+    how="left"
+)
+
+# Calculate revenue, preserving NULL for missing prices
+sales_products = sales_products.withColumn(
+    "revenue",
+    F.col("quantity") * F.col("price")
+)
+
+print("Sales after Product Join:", sales_products.count())
+
+print(
+    "Sales with Unknown Revenue:",
+    sales_products.filter(F.col("revenue").isNull()).count()
 )
 
 display(sales_products)
@@ -26,24 +87,48 @@ print("After product join:", sales_products.count())
 
 # COMMAND ----------
 
+# Join Sales and Products with Customers
+# Keep all sales transactions
+
 sales_complete = sales_products.join(
     customers,
     on="customer_id",
-    how="inner"
+    how="left"
+)
+
+print("Total Sales:", sales.count())
+print("Sales after Customer Join:", sales_complete.count())
+
+print(
+    "Sales with Missing Customers:",
+    sales_complete.filter("customer_name IS NULL").count()
 )
 
 display(sales_complete)
 
 # COMMAND ----------
 
-from pyspark.sql.functions import col, round
+from pyspark.sql import functions as F
 
-sales_complete = sales_complete.withColumn(
-    "revenue",
-    round(col("quantity") * col("price"), 2)
+# Validate revenue already calculated in Cell 5
+print("Total Sales:", sales_complete.count())
+
+print(
+    "Sales with Known Revenue:",
+    sales_complete.filter(F.col("revenue").isNotNull()).count()
 )
 
-display(sales_complete)
+print(
+    "Sales with Unknown Revenue:",
+    sales_complete.filter(F.col("revenue").isNull()).count()
+)
+
+print(
+    "Total Known Revenue:",
+    sales_complete.agg(
+        F.round(F.sum("revenue"), 2).alias("total_revenue")
+    ).first()["total_revenue"]
+)
 
 # COMMAND ----------
 
@@ -62,6 +147,8 @@ display(total_revenue)
 
 # COMMAND ----------
 
+from pyspark.sql.functions import col, sum, round
+
 product_revenue = (
     sales_complete
     .groupBy("product_id", "product_name")
@@ -72,7 +159,6 @@ product_revenue = (
 )
 
 display(product_revenue)
-
 
 # COMMAND ----------
 
@@ -148,6 +234,13 @@ customer_spending.write \
 # COMMAND ----------
 
 display(spark.sql("SHOW TABLES IN workspace.gold"))
+
+# COMMAND ----------
+
+print("Product Revenue:", spark.table("workspace.gold.product_revenue").count())
+print("Monthly Revenue:", spark.table("workspace.gold.monthly_revenue").count())
+print("Category Revenue:", spark.table("workspace.gold.category_revenue").count())
+print("Customer Spending:", spark.table("workspace.gold.customer_spending").count())
 
 # COMMAND ----------
 
